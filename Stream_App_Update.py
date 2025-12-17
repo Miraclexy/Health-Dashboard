@@ -373,6 +373,30 @@ def compute_hardcore_day(df_wk: pd.DataFrame, df_ring: pd.DataFrame):
 
     return hardcore_date, row, per_type, kcal, source
 
+
+def longest_streak_from_dates(dates) -> dict:
+    """
+    dates: iterable of datetime.date / datetime64 / str
+    return: {length, start, end}
+    """
+    s = pd.to_datetime(pd.Series(list(dates))).dt.normalize().dropna().drop_duplicates().sort_values()
+    if s.empty:
+        return {"length": 0, "start": None, "end": None}
+
+    day = s.dt.floor("D")
+    # consecutive days → diff==1 day
+    grp = (day.diff().dt.days.ne(1)).cumsum()
+    streak_len = day.groupby(grp).size()
+    best_grp = streak_len.idxmax()
+    best_len = int(streak_len.loc[best_grp])
+
+    best_days = day[grp == best_grp]
+    return {
+        "length": best_len,
+        "start": best_days.iloc[0].date(),
+        "end": best_days.iloc[-1].date(),
+    }
+
 # =========================
 # Plots
 # =========================
@@ -387,7 +411,7 @@ def plot_concentric_rings(year: int, df_wk: pd.DataFrame, df_ring: pd.DataFrame)
     workout_days = min(workout_days, total_days_year)
     closed_days = min(closed_days, workout_days)
 
-    fig, ax = plt.subplots(figsize=(7.0, 7.0))
+    fig, ax = plt.subplots(figsize=(9.0, 9.0))
     ax.axis("equal")
 
     outer_gray = "#D8D8D8"
@@ -397,37 +421,37 @@ def plot_concentric_rings(year: int, df_wk: pd.DataFrame, df_ring: pd.DataFrame)
 
     ax.pie(
         [total_days_year],
-        radius=1.35,
+        radius=1.05,
         colors=[outer_gray],
         startangle=90,
         wedgeprops=dict(width=0.25, edgecolor="white"),
     )
     ax.pie(
         [workout_days, total_days_year - workout_days],
-        radius=1.05,
+        radius=0.75,
         colors=[apple_green, inner_bg],
         startangle=90,
         wedgeprops=dict(width=0.25, edgecolor="white"),
     )
     ax.pie(
         [closed_days, total_days_year - closed_days],
-        radius=0.75,
+        radius=0.45,
         colors=[apple_orange, inner_bg],
         startangle=90,
         wedgeprops=dict(width=0.25, edgecolor="white"),
     )
 
     ax.text(
-        0.5, 0.965,
+        0.5, 0.865,
         f"{total_days_year} days total",
         transform=ax.transAxes,
         ha="center", va="bottom",
-        fontsize=13, color="black", fontweight="normal",
+        fontsize=12, color="black", fontweight="normal",
     )
 
     label_style = dict(fontsize=12, color="black", fontweight="normal")
     angle = np.deg2rad(90)
-    shift = 0.20
+    shift = 0.45
 
     r_w = 1.05
     ax.text(
@@ -649,29 +673,57 @@ def plot_monthly_workouts(year: int, df_wk: pd.DataFrame):
     fig.legend(lines1 + lines2, labels1 + labels2, loc="upper right", fontsize=10)
     return fig
 
-
 def plot_weekday_workouts(year: int, df_wk: pd.DataFrame):
-    if df_wk.empty:
-        return None
+    # Ensure required columns
+    df_wk["month"] = df_wk["start"].dt.month
+    df_wk["weekday"] = df_wk["start"].dt.weekday  # 0 = Mon, 6 = Sun
 
-    df = df_wk.copy()
-    df["weekday"] = df["date"].apply(lambda d: d.weekday())  # 0=Mon
-    names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-
-    stats = (
-        df.groupby("weekday")
-        .agg(workout_count=("weekday", "count"), total_duration=("duration", "sum"))
-        .reindex(range(7), fill_value=0)
+    # Monthly × weekday workout counts
+    monthly_weekday = (
+        df_wk
+        .groupby(["month", "weekday"])
+        .size()
+        .unstack(fill_value=0)
+        .sort_index()
     )
-    stats.index = [names[i] for i in stats.index]
+    WEEKDAY_COLORS = [
+        "#C7D9F2",  # Mon - very light blue
+        "#A9C4EA",  # Tue
+        "#7FA8E0",  # Wed
+        "#4F8AD8",  # Thu
+        "#1F6FD2",  # Fri - deep blue
+        "#FFB703",  # Sat - orange
+        "#FB8500",  # Sun - deeper orange
+    ]
 
-    fig, ax = plt.subplots(figsize=(8, 3))
-    ax.bar(stats.index, stats["workout_count"])
-    ax.set_xlabel("Weekday")
+    fig, ax = plt.subplots(figsize=(12, 5.3))
+    months = monthly_weekday.index.tolist()
+    weekday_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+    ax.stackplot(
+        months,
+        monthly_weekday.T.values,
+        labels=weekday_labels,
+        colors=WEEKDAY_COLORS,
+        alpha=0.9
+    )
+
+    # X-axis: month labels
+    ax.set_xticks(months)
+    ax.set_xticklabels(
+        [date(year, m, 1).strftime("%b") for m in months]
+    )
     ax.set_ylabel("Workout Count")
-    fig.tight_layout()
-    return fig
+    # Legend
+    ax.legend(
+        loc="best",
+        ncol=4,
+        frameon=False,
+        fontsize=11
+    )
 
+    plt.tight_layout()
+    return plt
 
 # =========================
 # Sidebar inputs
@@ -748,6 +800,29 @@ if show_summary:
         c4.metric("All rings closed days", "N/A")
     else:
         c4.metric("All rings closed days", f"{int(df_ring['all_closed'].sum())}")
+
+    # Longest workout streak (consecutive workout days)
+    wk_streak = longest_streak_from_dates(df_wk["date"]) if not df_wk.empty else {"length": 0, "start": None, "end": None}
+    # Longest all-rings-closed streak
+    if df_ring is not None and (not df_ring.empty) and ("all_closed" in df_ring.columns):
+        ring_days = df_ring.loc[df_ring["all_closed"], "date"]
+        ring_streak = longest_streak_from_dates(ring_days)
+    else:
+        ring_streak = {"length": 0, "start": None, "end": None}
+    col1, col2 = st.columns(2)
+    with col1:
+        if wk_streak["length"] > 0:
+            st.metric("🔥 Longest workout streak days", f"{wk_streak['length']}",
+                    help=f"{wk_streak['start']} → {wk_streak['end']}")
+        else:
+            st.metric("🔥 Longest workout streak days", "0 days")
+
+    with col2:
+        if ring_streak["length"] > 0:
+            st.metric("💪 Longest all-rings-closed streak days", f"{ring_streak['length']}",
+                    help=f"{ring_streak['start']} → {ring_streak['end']}")
+        else:
+            st.metric("💪 Longest all-rings-closed streak days", "0 days")
 
     with st.expander("See workout type table"):
         if activity_stats.empty:
