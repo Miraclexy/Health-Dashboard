@@ -674,6 +674,28 @@ def plot_monthly_workouts(year: int, df_wk: pd.DataFrame):
     return fig
 
 def plot_weekday_workouts(year: int, df_wk: pd.DataFrame):
+    if df_wk.empty:
+        return None
+
+    df = df_wk.copy()
+    df["weekday"] = df["date"].apply(lambda d: d.weekday())  # 0=Mon
+    names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+    stats = (
+        df.groupby("weekday")
+        .agg(workout_count=("weekday", "count"), total_duration=("duration", "sum"))
+        .reindex(range(7), fill_value=0)
+    )
+    stats.index = [names[i] for i in stats.index]
+
+    fig, ax = plt.subplots(figsize=(8, 3))
+    ax.bar(stats.index, stats["workout_count"])
+    ax.set_xlabel("Weekday")
+    ax.set_ylabel("Workout Count")
+    fig.tight_layout()
+    return fig
+
+def plot_weekday_workouts_bymonth(year: int, df_wk: pd.DataFrame):
     # Ensure required columns
     df_wk["month"] = df_wk["start"].dt.month
     df_wk["weekday"] = df_wk["start"].dt.weekday  # 0 = Mon, 6 = Sun
@@ -732,6 +754,9 @@ available_years = list(range(2015, date.today().year + 1))
 with st.sidebar:
     st.header("Inputs")
     YEAR = st.sidebar.selectbox( "Year",options=available_years,index=len(available_years) - 1 )
+    if YEAR != st.session_state.get("prev_year"):
+        st.session_state.weekday_monthly_toggle = False
+        st.session_state.prev_year = YEAR
     uploaded_zip = st.file_uploader("Upload Apple Health export.zip", type=["zip"])
     st.divider()
     st.header("Sections")
@@ -979,5 +1004,14 @@ if show_weekday:
         st.write("No workouts.")
     else:
         st.pyplot(fig, clear_figure=True)
+    
+    show_monthly = st.toggle(
+        "See monthly trend",
+        value=False,
+        key="weekday_monthly_toggle"
+    )
+    if show_monthly:
+        fig_stack = plot_weekday_workouts_bymonth(int(YEAR), df_wk)
+        st.pyplot(fig_stack)
 
 st.caption("Done. Tip: if you upload the same zip again, parsing is cached.")
